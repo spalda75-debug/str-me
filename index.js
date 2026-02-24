@@ -84,7 +84,23 @@ function parseM3U(m3uText) {
   }
   return items;
 }
+builder.defineMetaHandler(async ({ type, id }) => {
+  try {
+    await ensureCache();
 
+    const meta = cache.byImdb.get(id);
+
+    // musí sedět typ (movie/series)
+    if (!meta || meta.type !== type) {
+      return { meta: null };
+    }
+
+    return { meta };
+  } catch (e) {
+    console.error("META ERROR:", e && (e.stack || e.message || e));
+    return { meta: null };
+  }
+});
 // TMDb -> IMDb (film)
 async function tmdbMovieToImdb(tmdbId) {
   const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}`;
