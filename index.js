@@ -33,7 +33,21 @@ async function fetchText(url) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return await res.text();
 }
+async function mapLimit(arr, limit, fn) {
+  const ret = [];
+  const executing = [];
+  for (const item of arr) {
+    const p = Promise.resolve().then(() => fn(item));
+    ret.push(p);
 
+    if (limit <= arr.length) {
+      const e = p.then(() => executing.splice(executing.indexOf(e), 1));
+      executing.push(e);
+      if (executing.length >= limit) await Promise.race(executing);
+    }
+  }
+  return Promise.all(ret);
+}
 function parseSxxEyy(str) {
   const m = str.match(/S(\d{1,2})E(\d{1,2})/i);
   if (!m) return null;
