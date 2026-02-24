@@ -179,11 +179,32 @@ builder.defineCatalogHandler(async ({ type, id }) => {
 });
 
 // --------- 3) Meta detail ----------
+builder.defineCatalogHandler(async ({ type, id }) => {
+  try {
+    await ensureCache();
+
+    if (type === "movie" && id === "m3u-movies") {
+      return { metas: cache.movies.map(m => ({ id: m.imdbId, type: "movie", name: m.name, poster: m.poster })) };
+    }
+    if (type === "series" && id === "m3u-series") {
+      return { metas: cache.series.map(s => ({ id: s.imdbId, type: "series", name: s.name, poster: s.poster })) };
+    }
+    return { metas: [] };
+  } catch (e) {
+    console.error("CATALOG HANDLER ERROR:", e && (e.stack || e.message || e));
+    return { metas: [] }; // ať Stremio nepadá celé
+  }
+});
+
 builder.defineMetaHandler(async ({ type, id }) => {
-  await ensureCache();
-  const meta = cache.byImdb.get(id);
-  if (!meta || meta.type !== type) return { meta: null };
-  return { meta };
+  try {
+    await ensureCache();
+    const meta = cache.byImdb.get(id);
+    return { meta: meta && meta.type === type ? meta : null };
+  } catch (e) {
+    console.error("META HANDLER ERROR:", e && (e.stack || e.message || e));
+    return { meta: null };
+  }
 });
 
 // --------- server ----------
