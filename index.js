@@ -29,15 +29,14 @@ let cache = {
 };
 
 async function fetchText(url) {
-  const res = await fetchFn(url, { redirect: "follow" });
-  const text = await res.text();
-
-  console.log("PLAYLIST HEAD:", text.slice(0, 200));
-
-  if (!text.includes("#EXTINF")) {
-    throw new Error("Playlist is not M3U (#EXTINF missing) – Dropbox likely returned HTML");
-  }
-  return text;
+  const res = await fetchFn(url, {
+    redirect: "follow",
+    headers: {
+      "User-Agent": "Mozilla/5.0 (StremioM3UAddon)"
+    }
+  });
+  if (!res.ok) throw new Error(`Playlist HTTP ${res.status}`);
+  return await res.text();
 }
 async function mapLimit(arr, limit, fn) {
   const ret = [];
