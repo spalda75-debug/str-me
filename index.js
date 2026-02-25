@@ -159,7 +159,7 @@ async function ensureCache() {
 
   for (const m of movies) {
     byImdb.set(m.imdbId, {
-      id: m.imdbId,
+      id: "tmdb:" + m.tmdbId,
       type: "movie",
       name: m.name,
       poster: m.poster
@@ -168,7 +168,7 @@ async function ensureCache() {
 
   for (const s of series) {
     byImdb.set(s.imdbId, {
-      id: s.imdbId,
+      id: "tmdb:" + s.tmdbId,
       type: "series",
       name: s.name.replace(/\sS\d{1,2}E\d{1,2}.*/i, "").trim(),
       poster: s.poster,
