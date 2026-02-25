@@ -1,4 +1,8 @@
 // index.js
+process.on("uncaughtException", (err) => console.error("UNCAUGHT:", err));
+process.on("unhandledRejection", (err) => console.error("UNHANDLED:", err));
+
+const fetchFn = global.fetch ? global.fetch.bind(global) : require("node-fetch");
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 
 const PLAYLIST_URL = process.env.PLAYLIST_URL;   // Dropbox raw link
@@ -31,12 +35,18 @@ let cache = {
 async function fetchText(url) {
   const res = await fetchFn(url, {
     redirect: "follow",
-    headers: {
-      "User-Agent": "Mozilla/5.0 (StremioM3UAddon)"
-    }
+    headers: { "User-Agent": "Mozilla/5.0 (StremioAddon)" }
   });
-  if (!res.ok) throw new Error(`Playlist HTTP ${res.status}`);
-  return await res.text();
+
+  const text = await res.text();
+
+  console.log("PLAYLIST HTTP:", res.status, res.headers.get("content-type"));
+  console.log("PLAYLIST HEAD:", JSON.stringify(text.slice(0, 200)));
+
+  if (!res.ok) {
+    throw new Error(`PLAYLIST HTTP ${res.status}`);
+  }
+  return text;
 }
 async function mapLimit(arr, limit, fn) {
   const ret = [];
@@ -187,30 +197,19 @@ async function ensureCache() {
 // --------- 2) Catalog ----------
 builder.defineCatalogHandler(async ({ type, id }) => {
   try {
+    console.log("CATALOG request:", type, id);
     await ensureCache();
 
     if (type === "movie" && id === "m3u-movies") {
-      return { metas: cache.movies.map(m => ({
-        id: m.imdbId,
-        type: "movie",
-        name: m.name,
-        poster: m.poster
-      })) };
+      return { metas: cache.movies.map(m => ({ id: m.imdbId, type: "movie", name: m.name, poster: m.poster })) };
     }
-
     if (type === "series" && id === "m3u-series") {
-      return { metas: cache.series.map(s => ({
-        id: s.imdbId,
-        type: "series",
-        name: s.name,
-        poster: s.poster
-      })) };
+      return { metas: cache.series.map(s => ({ id: s.imdbId, type: "series", name: s.name, poster: s.poster })) };
     }
-
     return { metas: [] };
   } catch (e) {
-    console.error("CATALOG ERROR:", e);
-    return { meta: meta };
+    console.error("CATALOG HANDLER ERROR:", e && (e.stack || e.message || e));
+    return { metas: [] }; // důležité: žádná 500, žádný handler error
   }
 });
 
