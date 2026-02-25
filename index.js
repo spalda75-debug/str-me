@@ -247,7 +247,7 @@ async function ensureCache(forceReload = false) {
 	  name: cleanName || rawName,
 	  poster: obj.item.logo || undefined,
 	  genres: splitGenres(obj.item.groupTitle),
-	  episodes
+	  episodes: obj.episodes
 	};
   });
 
@@ -261,7 +261,8 @@ async function ensureCache(forceReload = false) {
 	  tmdbId: m.tmdbId,
 	  fallbackPoster: m.poster,
 	  fallbackName: m.name,
-	  genres: m.genres
+	  genres: m.genres,
+	  groupTitle: (m.genres || []).join("/") // nebo m.groupTitle pokud ho máš zvlášť
 	});
   }
   for (const s of series) {
@@ -270,7 +271,8 @@ async function ensureCache(forceReload = false) {
 	  tmdbId: s.tmdbId,
 	  fallbackPoster: s.poster,
 	  fallbackName: s.name,
-	  genres: s.genres
+	  genres: s.genres,
+	  groupTitle: (s.genres || []).join("/")
 	});
   }
 
