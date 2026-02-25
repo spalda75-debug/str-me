@@ -69,49 +69,6 @@ builder.defineCatalogHandler(async () => {
   }
 });
 
-// --- custom HTTP server: /manifest.json, /catalog/... a navíc /debug
-const iface = builder.getInterface();
-
-http
-  .createServer(async (req, res) => {
-    try {
-      if (req.url && req.url.startsWith("/debug")) {
-        try {
-          await loadOnce();
-        } catch (e) {
-          // i když load spadne, vrať chybu do debug odpovědi
-          const out = {
-            ok: false,
-            error: e?.message || String(e),
-            playlist_url_present: Boolean(PLAYLIST_URL),
-            playlist_url_preview: PLAYLIST_URL ? PLAYLIST_URL.slice(0, 60) + "..." : ""
-          };
-          res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify(out, null, 2));
-          return;
-        }
-
-        const out = {
-          ok: true,
-          playlist_url_present: Boolean(PLAYLIST_URL),
-          playlist_url_preview: PLAYLIST_URL ? PLAYLIST_URL.slice(0, 60) + "..." : "",
-          http_status: last.status,
-          content_type: last.ctype,
-          extinf_count: last.extinf,
-          metas_built: last.metas.length,
-          head_200_chars: last.head
-        };
-
-        res.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify(out, null, 2));
-        return;
-      }
-
-      // delegate to stremio interface
-      iface(req, res);
-    } catch (e) {
-      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      res.end("Server error: " + (e?.message || String(e)));
-    }
-  })
-  .listen(PORT, () => console.log("Running on port", PORT));
+const { serveHTTP } = require("stremio-addon-sdk");
+serveHTTP(builder.getInterface(), { port: PORT });
+console.log("Addon running on port:", PORT);
