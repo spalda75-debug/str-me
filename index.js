@@ -12,9 +12,17 @@ if (!fetchFn) {
 const PLAYLIST_URL = (process.env.PLAYLIST_URL || "").trim();
 const TMDB_KEY = (process.env.TMDB_KEY || "").trim();
 const PORT = process.env.PORT || 7000;
-const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "120", 10); // 2 min
 
-// --- helpers
+// jak často je OK stáhnout playlist znovu (sekundy)
+const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "300", 10); // default 5 min
+
+// kolik paralelních requestů na TMDb (ať nedostaneš 429)
+const TMDB_PAR_MOVIES = parseInt(process.env.TMDB_PAR_MOVIES || "6", 10);
+const TMDB_PAR_SERIES = parseInt(process.env.TMDB_PAR_SERIES || "4", 10);
+
+// ------------------------------------------------------------
+// helpers
+// ------------------------------------------------------------
 function slugify(s) {
   return (s || "")
     .toLowerCase()
@@ -38,6 +46,24 @@ function getAttr(line, key) {
   return m ? m[1] : "";
 }
 
+function splitGenres(groupTitle) {
+  // "Drama/Krimi/Thriller" -> ["Drama","Krimi","Thriller"]
+  const raw = (groupTitle || "")
+    .split(/[\/|,]+/g)
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const seen = new Set();
+  const out = [];
+  for (const g of raw) {
+    const k = g.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(g);
+  }
+  return out;
+}
+
 async function fetchText(url) {
   const res = await fetchFn(url, {
     redirect: "follow",
@@ -59,7 +85,7 @@ function parseM3U(m3uText) {
   for (const line of lines) {
     if (!line.toUpperCase().startsWith("#EXTINF")) continue;
 
-    const tvgId = getAttr(line, "tvg-id") || "";                // TMDb id
+    const tvgId = getAttr(line, "tvg-id") || ""; // TMDb id (tvůj standard)
     const tvgName = getAttr(line, "tvg-name") || "";
     const tvgType = (getAttr(line, "tvg-type") || "").toLowerCase().trim(); // movie / tv
     const logo = getAttr(line, "tvg-logo") || "";
@@ -68,7 +94,9 @@ function parseM3U(m3uText) {
 
     items.push({ tvgId, tvgName, tvgType, logo, groupTitle, titlePart });
   }
+
   console.log("PARSE items:", items.length);
+  console.log("PARSE types:", [...new Set(items.map(i => i.tvgType))].slice(0, 20));
   return items;
 }
 
@@ -87,9 +115,11 @@ async function mapLimit(arr, limit, fn) {
   return Promise.all(ret);
 }
 
-// --- TMDb helpers (IMDb + CZ overview)
-const tmdbToImdbMem = new Map();   // movie:ID / tv:ID -> tt...|null
-const tmdbCzMetaMem = new Map();   // movie:ID / tv:ID -> { overview, poster_path, name/title } (cs-CZ)
+// ------------------------------------------------------------
+// TMDb helpers (IMDb + cs-CZ meta)
+// ------------------------------------------------------------
+const tmdbToImdbMem = new Map(); // movie:ID / tv:ID -> tt...|null
+const tmdbCzMetaMem = new Map(); // movie:ID / tv:ID -> { overview, poster_path, title/name, release_date/first_air_date, runtime, vote_average }
 
 async function tmdbJson(url) {
   const res = await fetchFn(url, { redirect: "follow" });
@@ -126,9 +156,12 @@ async function tmdbCzMovieMeta(tmdbId) {
 
   const data = await tmdbJson(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}&language=cs-CZ`);
   const out = {
-    overview: data.overview || "",
+    overview: (data.overview || "").trim(),
     poster_path: data.poster_path || "",
-    title: data.title || data.original_title || ""
+    title: data.title || data.original_title || "",
+    release_date: data.release_date || "",
+    runtime: typeof data.runtime === "number" ? data.runtime : null,
+    vote_average: typeof data.vote_average === "number" ? data.vote_average : null
   };
   tmdbCzMetaMem.set(key, out);
   return out;
@@ -140,43 +173,48 @@ async function tmdbCzTvMeta(tmdbId) {
 
   const data = await tmdbJson(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}&language=cs-CZ`);
   const out = {
-    overview: data.overview || "",
+    overview: (data.overview || "").trim(),
     poster_path: data.poster_path || "",
-    title: data.name || data.original_name || ""
+    title: data.name || data.original_name || "",
+    first_air_date: data.first_air_date || "",
+    episode_run_time: Array.isArray(data.episode_run_time) && data.episode_run_time.length ? data.episode_run_time[0] : null,
+    vote_average: typeof data.vote_average === "number" ? data.vote_average : null
   };
   tmdbCzMetaMem.set(key, out);
   return out;
 }
 
-// --- cache
+function tmdbPosterUrl(path) {
+  return path ? `https://image.tmdb.org/t/p/w500${path}` : null;
+}
+
+function yearFromDate(dateStr) {
+  const m = (dateStr || "").match(/^(\d{4})/);
+  return m ? m[1] : "";
+}
+
+function imdbRatingFromTmdb(voteAverage) {
+  // vote_average je 0..10, v UI ukazuje jako "IMDb" badge jen když pošleme imdbRating
+  if (typeof voteAverage !== "number") return null;
+  const r = Math.round(voteAverage * 1000) / 1000; // 3 desetiny
+  if (!isFinite(r) || r <= 0) return null;
+  return r;
+}
+
+// ------------------------------------------------------------
+// cache (playlist + mapped items)
+// ------------------------------------------------------------
 let cache = {
   loadedAt: 0,
-  movies: [], // { tmdbId, imdbId, name, poster, groupTitle }
-  series: [], // { tmdbId, imdbId, name, poster, groupTitle, episodes:Set }
-  byImdb: new Map(), // tt.. -> { type, tmdbId, fallbackPoster, fallbackName, groupTitle }
-  movieGroups: [],   // list of group names
-  seriesGroups: []
+
+  movies: [], // { tmdbId, imdbId, name, poster, genres[], description, releaseInfo, runtime, imdbRating }
+  series: [], // { tmdbId, imdbId, name, poster, genres[], description, releaseInfo, runtime, imdbRating, episodes:Set }
+
+  byImdb: new Map(), // tt.. -> { type, tmdbId, fallbackPoster, fallbackName, genres[] }
+
+  movieGenres: [], // uniq list of all genres
+  seriesGenres: []
 };
-
-function splitGenres(groupTitle) {
-  // rozdělí "Drama/Krimi/Thriller" -> ["Drama","Krimi","Thriller"]
-  // tolerantní i na další oddělovače
-  const raw = (groupTitle || "")
-    .split(/[\/|,]+/g)
-    .map(s => s.trim())
-    .filter(Boolean);
-
-  // odduplikuj při zachování pořadí
-  const seen = new Set();
-  const out = [];
-  for (const g of raw) {
-    const k = g.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(g);
-  }
-  return out;
-}
 
 async function ensureCache(forceReload = false) {
   if (!PLAYLIST_URL) throw new Error("Missing env PLAYLIST_URL");
@@ -196,15 +234,15 @@ async function ensureCache(forceReload = false) {
 
   const moviesMap = new Map(); // tmdbId -> item
   const seriesMap = new Map(); // tmdbId -> { item, episodes:Set }
-  const movieGroupsSet = new Set();
-  const seriesGroupsSet = new Set();
+  const movieGenresSet = new Set();
+  const seriesGenresSet = new Set();
 
   for (const it of items) {
     const t = (it.tvgType || "").toLowerCase();
 
     if (t === "movie") {
       if (it.tvgId) moviesMap.set(it.tvgId, it);
-      for (const g of splitGenres(it.groupTitle)) movieGroupsSet.add(g);
+      for (const g of splitGenres(it.groupTitle)) movieGenresSet.add(g);
       continue;
     }
 
@@ -216,39 +254,95 @@ async function ensureCache(forceReload = false) {
       if (!seriesMap.has(it.tvgId)) seriesMap.set(it.tvgId, { item: it, episodes: new Set() });
       seriesMap.get(it.tvgId).episodes.add(`${se.s}-${se.e}`);
 
-      for (const g of splitGenres(it.groupTitle)) seriesGroupsSet.add(g);
+      for (const g of splitGenres(it.groupTitle)) seriesGenresSet.add(g);
     }
   }
 
+  console.log("MOVIES candidates:", moviesMap.size);
+  console.log("SERIES candidates:", seriesMap.size);
+
+  // --- movies resolve (IMDb + CZ text) ---
   const movieEntries = [...moviesMap.entries()];
-  const movieResolved = await mapLimit(movieEntries, 6, async ([tmdbId, it]) => {
-    const imdbId = await tmdbMovieToImdb(tmdbId);
+  const movieResolved = await mapLimit(movieEntries, TMDB_PAR_MOVIES, async ([tmdbId, it]) => {
+    let imdbId = null;
+    try {
+      imdbId = await tmdbMovieToImdb(tmdbId);
+    } catch (e) {
+      console.error("TMDb movie->IMDb error", tmdbId, e?.message || e);
+      return null;
+    }
     if (!imdbId) return null;
+
+    let cz = null;
+    try {
+      cz = await tmdbCzMovieMeta(tmdbId);
+    } catch (e) {
+      console.error("TMDb CZ movie meta error", tmdbId, e?.message || e);
+      cz = null;
+    }
+
+    const genres = splitGenres(it.groupTitle);
+    const poster = tmdbPosterUrl(cz?.poster_path) || it.logo || undefined;
+    const description = (cz?.overview || "").trim();
+    const releaseInfo = yearFromDate(cz?.release_date);
+    const runtime = (typeof cz?.runtime === "number" && cz.runtime > 0) ? `${cz.runtime} min` : undefined;
+    const imdbRating = imdbRatingFromTmdb(cz?.vote_average);
+
     return {
-	  tmdbId,
-	  imdbId,
-	  name: it.titlePart || it.tvgName,
-	  poster: it.logo || undefined,
-	  genres: splitGenres(it.groupTitle)
-	};
+      tmdbId,
+      imdbId,
+      name: it.titlePart || it.tvgName,
+      poster,
+      genres,
+      description,
+      releaseInfo,
+      runtime,
+      imdbRating
+    };
   });
 
+  // --- series resolve (IMDb + CZ text) ---
   const seriesEntries = [...seriesMap.entries()];
-  const seriesResolved = await mapLimit(seriesEntries, 4, async ([tmdbId, obj]) => {
-    const imdbId = await tmdbTvToImdb(tmdbId);
+  const seriesResolved = await mapLimit(seriesEntries, TMDB_PAR_SERIES, async ([tmdbId, obj]) => {
+    let imdbId = null;
+    try {
+      imdbId = await tmdbTvToImdb(tmdbId);
+    } catch (e) {
+      console.error("TMDb tv->IMDb error", tmdbId, e?.message || e);
+      return null;
+    }
     if (!imdbId) return null;
 
     const rawName = obj.item.titlePart || obj.item.tvgName || "";
     const cleanName = rawName.replace(/\sS\d{1,2}E\d{1,2}.*/i, "").trim();
 
+    let cz = null;
+    try {
+      cz = await tmdbCzTvMeta(tmdbId);
+    } catch (e) {
+      console.error("TMDb CZ tv meta error", tmdbId, e?.message || e);
+      cz = null;
+    }
+
+    const genres = splitGenres(obj.item.groupTitle);
+    const poster = tmdbPosterUrl(cz?.poster_path) || obj.item.logo || undefined;
+    const description = (cz?.overview || "").trim();
+    const releaseInfo = yearFromDate(cz?.first_air_date);
+    const run = (typeof cz?.episode_run_time === "number" && cz.episode_run_time > 0) ? `${cz.episode_run_time} min` : undefined;
+    const imdbRating = imdbRatingFromTmdb(cz?.vote_average);
+
     return {
-	  tmdbId,
-	  imdbId,
-	  name: cleanName || rawName,
-	  poster: obj.item.logo || undefined,
-	  genres: splitGenres(obj.item.groupTitle),
-	  episodes: obj.episodes
-	};
+      tmdbId,
+      imdbId,
+      name: cleanName || rawName,
+      poster,
+      genres,
+      description,
+      releaseInfo,
+      runtime: run,
+      imdbRating,
+      episodes: obj.episodes
+    };
   });
 
   const movies = movieResolved.filter(Boolean);
@@ -257,23 +351,21 @@ async function ensureCache(forceReload = false) {
   const byImdb = new Map();
   for (const m of movies) {
     byImdb.set(m.imdbId, {
-	  type: "movie",
-	  tmdbId: m.tmdbId,
-	  fallbackPoster: m.poster,
-	  fallbackName: m.name,
-	  genres: m.genres,
-	  groupTitle: (m.genres || []).join("/") // nebo m.groupTitle pokud ho máš zvlášť
-	});
+      type: "movie",
+      tmdbId: m.tmdbId,
+      fallbackPoster: m.poster,
+      fallbackName: m.name,
+      genres: m.genres
+    });
   }
   for (const s of series) {
     byImdb.set(s.imdbId, {
-	  type: "series",
-	  tmdbId: s.tmdbId,
-	  fallbackPoster: s.poster,
-	  fallbackName: s.name,
-	  genres: s.genres,
-	  groupTitle: (s.genres || []).join("/")
-	});
+      type: "series",
+      tmdbId: s.tmdbId,
+      fallbackPoster: s.poster,
+      fallbackName: s.name,
+      genres: s.genres
+    });
   }
 
   cache = {
@@ -281,21 +373,23 @@ async function ensureCache(forceReload = false) {
     movies,
     series,
     byImdb,
-    movieGroups: [...movieGroupsSet].sort((a,b)=>a.localeCompare(b, "cs")),
-    seriesGroups: [...seriesGroupsSet].sort((a,b)=>a.localeCompare(b, "cs"))
+    movieGenres: [...movieGenresSet].sort((a, b) => a.localeCompare(b, "cs")),
+    seriesGenres: [...seriesGenresSet].sort((a, b) => a.localeCompare(b, "cs"))
   };
 
   console.log("MOVIES:", movies.length, "SERIES:", series.length);
 }
 
-// ---------------- dynamic catalogs by group-title (built at startup + refresh cache)
-function buildManifestWithGroups(movieGroups, seriesGroups) {
+// ------------------------------------------------------------
+// Manifest (dynamic genre catalogs)
+// ------------------------------------------------------------
+function buildManifestWithGenres(movieGenres, seriesGenres) {
   const catalogs = [
     { type: "movie", id: "m3u-movies", name: "Moje filmy (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
     { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] }
   ];
 
-  for (const g of movieGroups) {
+  for (const g of movieGenres) {
     catalogs.push({
       type: "movie",
       id: `m3u-movies-g-${slugify(g)}`,
@@ -304,7 +398,7 @@ function buildManifestWithGroups(movieGroups, seriesGroups) {
     });
   }
 
-  for (const g of seriesGroups) {
+  for (const g of seriesGenres) {
     catalogs.push({
       type: "series",
       id: `m3u-series-g-${slugify(g)}`,
@@ -315,27 +409,31 @@ function buildManifestWithGroups(movieGroups, seriesGroups) {
 
   return {
     id: "com.veronika.m3u.library",
-    version: "0.6.0",
-    name: "M3U Library (Genres + CZ TMDb plot)",
-    description: "Katalogy podle group-title + české popisy z TMDb. ID = IMDb pro vyhledávání zdrojů.",
+    version: "0.7.0",
+    name: "M3U Library (CZ descriptions + genres)",
+    description: "Knihovna z M3U: tvg-id=TMDb -> IMDb. Popis v češtině z TMDb a žánry podle group-title (položka může být ve více žánrech).",
     resources: ["catalog", "meta"],
     types: ["movie", "series"],
     catalogs
   };
 }
 
-// 1) načti cache jednou na start, a podle toho postav manifest
+// ------------------------------------------------------------
+// Start
+// ------------------------------------------------------------
 (async () => {
   try {
     await ensureCache(true);
   } catch (e) {
     console.error("Startup cache load failed:", e?.message || e);
+    // i když selže, postavíme alespoň minimal manifest
+    cache.movieGenres = [];
+    cache.seriesGenres = [];
   }
 
-  const manifest = buildManifestWithGroups(cache.movieGroups, cache.seriesGroups);
+  const manifest = buildManifestWithGenres(cache.movieGenres, cache.seriesGenres);
   const builder = new addonBuilder(manifest);
 
-  // --- catalog handler (all + by group)
   builder.defineCatalogHandler(async ({ type, id, extra }) => {
     try {
       const force = extra?.refresh === "1";
@@ -351,12 +449,17 @@ function buildManifestWithGroups(movieGroups, seriesGroups) {
             id: x.imdbId,
             type,
             name: x.name,
-            poster: x.poster
+            poster: x.poster,
+            description: x.description || (x.genres?.length ? `Žánry: ${x.genres.join(", ")}` : undefined),
+            genres: x.genres,
+            releaseInfo: x.releaseInfo,
+            runtime: x.runtime,
+            imdbRating: x.imdbRating
           }))
         };
       }
 
-      // group catalogs
+      // genre catalogs
       const prefix = isMovie ? "m3u-movies-g-" : "m3u-series-g-";
       if (id.startsWith(prefix)) {
         const slug = id.slice(prefix.length);
@@ -367,7 +470,12 @@ function buildManifestWithGroups(movieGroups, seriesGroups) {
             id: x.imdbId,
             type,
             name: x.name,
-            poster: x.poster
+            poster: x.poster,
+            description: x.description || (x.genres?.length ? `Žánry: ${x.genres.join(", ")}` : undefined),
+            genres: x.genres,
+            releaseInfo: x.releaseInfo,
+            runtime: x.runtime,
+            imdbRating: x.imdbRating
           }))
         };
       }
@@ -379,7 +487,7 @@ function buildManifestWithGroups(movieGroups, seriesGroups) {
     }
   });
 
-  // --- meta handler: český popis z TMDb (cs-CZ)
+  // meta handler – pro detail; v listu už máme description, ale necháme i meta (např. kdyby Stremio chtělo víc)
   builder.defineMetaHandler(async ({ type, id }) => {
     try {
       await ensureCache(false);
@@ -387,21 +495,30 @@ function buildManifestWithGroups(movieGroups, seriesGroups) {
       const ref = cache.byImdb.get(id);
       if (!ref || ref.type !== type) return { meta: null };
 
-      let cz = null;
-      try {
-        cz = type === "movie" ? await tmdbCzMovieMeta(ref.tmdbId) : await tmdbCzTvMeta(ref.tmdbId);
-      } catch (e) {
-        console.error("TMDb CZ meta error:", ref.tmdbId, e?.message || e);
+      // najdi položku v cache, a vrať ji jako detail meta
+      const item = (type === "movie" ? cache.movies : cache.series).find(x => x.imdbId === id);
+      if (!item) {
+        return {
+          meta: {
+            id,
+            type,
+            name: ref.fallbackName,
+            poster: ref.fallbackPoster,
+            genres: ref.genres
+          }
+        };
       }
-
-      const posterFromTmdb = cz?.poster_path ? `https://image.tmdb.org/t/p/w500${cz.poster_path}` : null;
 
       const meta = {
         id,
         type,
-        name: ref.fallbackName, // necháváme tvůj název z playlistu
-        poster: posterFromTmdb || ref.fallbackPoster,
-        description: (cz?.overview || "").trim() || (ref.groupTitle ? `Skupina: ${ref.groupTitle}` : undefined)
+        name: item.name,
+        poster: item.poster,
+        description: item.description || undefined,
+        genres: item.genres,
+        releaseInfo: item.releaseInfo,
+        runtime: item.runtime,
+        imdbRating: item.imdbRating
       };
 
       return { meta };
