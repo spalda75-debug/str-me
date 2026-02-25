@@ -2,7 +2,7 @@
 process.on("uncaughtException", (err) => console.error("UNCAUGHT:", err));
 process.on("unhandledRejection", (err) => console.error("UNHANDLED:", err));
 
-const fetchFn = global.fetch ? global.fetch.bind(global) : require("node-fetch");
+const fetchFn = global.fetch.bind(global);
 const { addonBuilder, serveHTTP } = require("stremio-addon-sdk");
 
 const PLAYLIST_URL = process.env.PLAYLIST_URL; // Dropbox link (doporučuji ...&dl=1)
