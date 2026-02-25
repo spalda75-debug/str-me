@@ -304,4 +304,4 @@ builder.defineMetaHandler(async ({ type, id }) => {
 serveHTTP(builder.getInterface(), { port: PORT });
 
 console.log("Addon running on port:", PORT);
-console.log("Manifest:", `http://localhost:${PORT}/manifest.json`);.getInterface(), { port: process.env.PORT || 7000 });
+console.log("Manifest:", `http://localhost:${PORT}/manifest.json`);
