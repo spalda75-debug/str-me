@@ -574,17 +574,47 @@ function metaFromItem(type, x) {
   });
 
   builder.defineMetaHandler(async ({ type, id }) => {
-    try {
-      await ensureCache(false);
-      const arr = type === "movie" ? cache.movies : cache.series;
-      const item = arr.find(x => x.imdbId === id);
+  try {
+    await ensureCache(false);
+
+    if (type === "movie") {
+      const item = cache.movies.find(x => x.imdbId === id);
       if (!item) return { meta: null };
-      return { meta: metaFromItem(type, item) };
-    } catch (e) {
-      console.error("META ERROR:", e?.stack || e?.message || e);
-      return { meta: null };
+      return { meta: metaFromItem("movie", item) };
     }
-  });
+
+    if (type === "series") {
+      const item = cache.series.find(x => x.imdbId === id);
+      if (!item) return { meta: null };
+
+      const videos = [];
+
+      for (const key of item.episodes) {
+        const [s, e] = key.split("-").map(n => parseInt(n, 10));
+
+        videos.push({
+          id: `${id}:${s}:${e}`,
+          title: `S${String(s).padStart(2,"0")}E${String(e).padStart(2,"0")}`,
+          season: s,
+          episode: e
+        });
+      }
+
+      return {
+        meta: {
+          ...metaFromItem("series", item),
+          videos
+        }
+      };
+    }
+
+    return { meta: null };
+
+  } catch (e) {
+    console.error("META ERROR:", e);
+    return { meta: null };
+  }
+});
 
   // STREAM handler
   builder.defineStreamHandler(async ({ type, id }) => {
