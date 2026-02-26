@@ -13,10 +13,7 @@ const PLAYLIST_URL = (process.env.PLAYLIST_URL || "").trim();
 const TMDB_KEY = (process.env.TMDB_KEY || "").trim();
 const PORT = process.env.PORT || 7000;
 
-// jak často je OK stáhnout playlist znovu (sekundy)
-const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "300", 10); // default 5 min
-
-// kolik paralelních requestů na TMDb (ať nedostaneš 429)
+const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "300", 10);
 const TMDB_PAR_MOVIES = parseInt(process.env.TMDB_PAR_MOVIES || "6", 10);
 const TMDB_PAR_SERIES = parseInt(process.env.TMDB_PAR_SERIES || "4", 10);
 
@@ -47,7 +44,6 @@ function getAttr(line, key) {
 }
 
 function splitGenres(groupTitle) {
-  // "Drama/Krimi/Thriller" -> ["Drama","Krimi","Thriller"]
   const raw = (groupTitle || "")
     .split(/[\/|,]+/g)
     .map(s => s.trim())
@@ -68,14 +64,26 @@ function hasStarGenre(genres) {
   return (genres || []).some(g => g.trim().startsWith("★"));
 }
 
+// ★ žánry až na konec dropdownu katalogů
 const genreSort = (a, b) => {
-  // ★ žánry až na konec dropdownu
   const aStar = a.trim().startsWith("★");
   const bStar = b.trim().startsWith("★");
   if (aStar && !bStar) return 1;
   if (!aStar && bStar) return -1;
   return a.localeCompare(b, "cs");
 };
+
+// řazení položek podle playlistu, ale ★ až na konec (pořadí v playlistu zachováno)
+function sortByPlaylistThenStarLast(a, b) {
+  const aStar = hasStarGenre(a.genres);
+  const bStar = hasStarGenre(b.genres);
+
+  if (aStar && !bStar) return 1;
+  if (!aStar && bStar) return -1;
+
+  // obě stejné skupiny -> pořadí v playlistu
+  return (a.order ?? 999999999) - (b.order ?? 999999999);
+}
 
 async function fetchText(url) {
   const res = await fetchFn(url, {
@@ -94,18 +102,19 @@ async function fetchText(url) {
 function parseM3U(m3uText) {
   const lines = m3uText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const items = [];
+  let order = 0;
 
   for (const line of lines) {
     if (!line.toUpperCase().startsWith("#EXTINF")) continue;
 
-    const tvgId = getAttr(line, "tvg-id") || ""; // TMDb id (tvůj standard)
+    const tvgId = getAttr(line, "tvg-id") || ""; // TMDb id
     const tvgName = getAttr(line, "tvg-name") || "";
     const tvgType = (getAttr(line, "tvg-type") || "").toLowerCase().trim(); // movie / tv
     const logo = getAttr(line, "tvg-logo") || "";
     const groupTitle = getAttr(line, "group-title") || "";
     const titlePart = line.includes(",") ? line.split(",").slice(1).join(",").trim() : tvgName;
 
-    items.push({ tvgId, tvgName, tvgType, logo, groupTitle, titlePart });
+    items.push({ tvgId, tvgName, tvgType, logo, groupTitle, titlePart, order: order++ });
   }
 
   console.log("PARSE items:", items.length);
@@ -131,8 +140,8 @@ async function mapLimit(arr, limit, fn) {
 // ------------------------------------------------------------
 // TMDb helpers (IMDb + cs-CZ meta)
 // ------------------------------------------------------------
-const tmdbToImdbMem = new Map(); // movie:ID / tv:ID -> tt...|null
-const tmdbCzMetaMem = new Map(); // movie:ID / tv:ID -> cached cs-CZ meta
+const tmdbToImdbMem = new Map();
+const tmdbCzMetaMem = new Map();
 
 async function tmdbJson(url) {
   const res = await fetchFn(url, { redirect: "follow" });
@@ -212,16 +221,13 @@ function imdbRatingFromTmdb(voteAverage) {
 }
 
 // ------------------------------------------------------------
-// cache (playlist + mapped items)
+// cache
 // ------------------------------------------------------------
 let cache = {
   loadedAt: 0,
-
-  movies: [], // { tmdbId, imdbId, name, poster, genres[], description, releaseInfo, runtime, imdbRating }
-  series: [], // { tmdbId, imdbId, name, poster, genres[], description, releaseInfo, runtime, imdbRating, episodes:Set }
-
-  byImdb: new Map(), // tt.. -> minimal lookup for meta
-
+  movies: [],
+  series: [],
+  byImdb: new Map(),
   movieGenres: [],
   seriesGenres: []
 };
@@ -242,8 +248,9 @@ async function ensureCache(forceReload = false) {
 
   const items = parseM3U(m3u);
 
-  const moviesMap = new Map(); // tmdbId -> item
-  const seriesMap = new Map(); // tmdbId -> { item, episodes:Set }
+  // Pozor: Map zachovává pořadí vložení, ale musíme zabránit přepsání orderu
+  const moviesMap = new Map(); // tmdbId -> item (první výskyt)
+  const seriesMap = new Map(); // tmdbId -> { item(first), episodes:Set }
   const movieGenresSet = new Set();
   const seriesGenresSet = new Set();
 
@@ -251,7 +258,7 @@ async function ensureCache(forceReload = false) {
     const t = (it.tvgType || "").toLowerCase();
 
     if (t === "movie") {
-      if (it.tvgId) moviesMap.set(it.tvgId, it);
+      if (it.tvgId && !moviesMap.has(it.tvgId)) moviesMap.set(it.tvgId, it);
       for (const g of splitGenres(it.groupTitle)) movieGenresSet.add(g);
       continue;
     }
@@ -271,7 +278,6 @@ async function ensureCache(forceReload = false) {
   console.log("MOVIES candidates:", moviesMap.size);
   console.log("SERIES candidates:", seriesMap.size);
 
-  // --- movies ---
   const movieEntries = [...moviesMap.entries()];
   const movieResolved = await mapLimit(movieEntries, TMDB_PAR_MOVIES, async ([tmdbId, it]) => {
     let imdbId = null;
@@ -307,11 +313,11 @@ async function ensureCache(forceReload = false) {
       description,
       releaseInfo,
       runtime,
-      imdbRating
+      imdbRating,
+      order: it.order
     };
   });
 
-  // --- series ---
   const seriesEntries = [...seriesMap.entries()];
   const seriesResolved = await mapLimit(seriesEntries, TMDB_PAR_SERIES, async ([tmdbId, obj]) => {
     let imdbId = null;
@@ -351,7 +357,8 @@ async function ensureCache(forceReload = false) {
       releaseInfo,
       runtime: run,
       imdbRating,
-      episodes: obj.episodes
+      episodes: obj.episodes,
+      order: obj.item.order
     };
   });
 
@@ -359,12 +366,8 @@ async function ensureCache(forceReload = false) {
   const series = seriesResolved.filter(Boolean);
 
   const byImdb = new Map();
-  for (const m of movies) {
-    byImdb.set(m.imdbId, { type: "movie", tmdbId: m.tmdbId });
-  }
-  for (const s of series) {
-    byImdb.set(s.imdbId, { type: "series", tmdbId: s.tmdbId });
-  }
+  for (const m of movies) byImdb.set(m.imdbId, { type: "movie", tmdbId: m.tmdbId });
+  for (const s of series) byImdb.set(s.imdbId, { type: "series", tmdbId: s.tmdbId });
 
   cache = {
     loadedAt: now,
@@ -379,12 +382,12 @@ async function ensureCache(forceReload = false) {
 }
 
 // ------------------------------------------------------------
-// Manifest (dynamic genre catalogs) — ★ genres are already sorted last
+// Manifest
 // ------------------------------------------------------------
 function buildManifestWithGenres(movieGenres, seriesGenres) {
   const catalogs = [
-    { type: "movie", id: "m3u-movies", name: "CINEMA CITY", extra: [{ name: "refresh", options: ["0","1"] }] },
-    { type: "series", id: "m3u-series", name: "CINEMA CITY", extra: [{ name: "refresh", options: ["0","1"] }] }
+    { type: "movie", id: "m3u-movies", name: "Moje filmy (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
+    { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] }
   ];
 
   for (const g of movieGenres) {
@@ -407,9 +410,9 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
 
   return {
     id: "com.veronika.m3u.library",
-    version: "0.8.0",
-    name: "M3U Library (CZ + genres + ★ last)",
-    description: "Knihovna z M3U: tvg-id=TMDb -> IMDb. CZ popis z TMDb. Žánry z group-title (položka ve všech). ★ žánry na konec.",
+    version: "0.9.0",
+    name: "M3U Library (CZ + genres + playlist order)",
+    description: "Řazení v Moje filmy/seriály podle pořadí v playlistu (★ až na konec, ale pořadí zachováno).",
     resources: ["catalog", "meta"],
     types: ["movie", "series"],
     catalogs
@@ -453,26 +456,19 @@ function metaFromItem(type, x) {
       const isMovie = type === "movie";
       const baseArr = isMovie ? cache.movies : cache.series;
 
-      // ALL catalogs: ★ položky až na konec
+      // ALL: playlist order (★ last, but stable)
       if ((isMovie && id === "m3u-movies") || (!isMovie && id === "m3u-series")) {
-        const sorted = [...baseArr].sort((a, b) => {
-          const aStar = hasStarGenre(a.genres);
-          const bStar = hasStarGenre(b.genres);
-          if (aStar && !bStar) return 1;
-          if (!aStar && bStar) return -1;
-          return a.name.localeCompare(b.name, "cs");
-        });
-
+        const sorted = [...baseArr].sort(sortByPlaylistThenStarLast);
         return { metas: sorted.map(x => metaFromItem(type, x)) };
       }
 
-      // Genre catalogs: nic neodsouváme; jen filtr + abeceda
+      // Genre catalogs: playlist order (pouze filtr, žádná abeceda)
       const prefix = isMovie ? "m3u-movies-g-" : "m3u-series-g-";
       if (id.startsWith(prefix)) {
         const slug = id.slice(prefix.length);
         const filtered = baseArr
           .filter(x => (x.genres || []).some(g => slugify(g) === slug))
-          .sort((a, b) => a.name.localeCompare(b.name, "cs"));
+          .sort((a, b) => (a.order ?? 999999999) - (b.order ?? 999999999));
 
         return { metas: filtered.map(x => metaFromItem(type, x)) };
       }
@@ -484,15 +480,12 @@ function metaFromItem(type, x) {
     }
   });
 
-  // meta handler – detail view
   builder.defineMetaHandler(async ({ type, id }) => {
     try {
       await ensureCache(false);
-
       const arr = type === "movie" ? cache.movies : cache.series;
       const item = arr.find(x => x.imdbId === id);
       if (!item) return { meta: null };
-
       return { meta: metaFromItem(type, item) };
     } catch (e) {
       console.error("META ERROR:", e?.stack || e?.message || e);
