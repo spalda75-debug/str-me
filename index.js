@@ -635,7 +635,6 @@ function metaFromItem(type, x) {
         return {
           streams: [
             { name: "▶ Přehrát můj stream", url },
-            { name: "🔎 Vybrat jiné zdroje (jiné addony)", url } // jen jako “druhá volba”; Stremio nemá akci “otevři katalog addonů”
           ]
         };
       }
