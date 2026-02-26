@@ -17,6 +17,16 @@ const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "300",
 const TMDB_PAR_MOVIES = parseInt(process.env.TMDB_PAR_MOVIES || "6", 10);
 const TMDB_PAR_SERIES = parseInt(process.env.TMDB_PAR_SERIES || "4", 10);
 
+// Play mode:
+// - PLAY_NOW=1: vracíme jen 1 stream (autoplay)
+// - PLAY_NOW=0: vracíme 2 streamy (menu)
+const PLAY_NOW = (process.env.PLAY_NOW || "0").trim() === "1";
+
+// Validace streamu:
+// - VALIDATE_STREAM=1: zkusí HEAD s timeoutem (když fail -> nevrátí náš stream)
+const VALIDATE_STREAM = (process.env.VALIDATE_STREAM || "0").trim() === "1";
+const STREAM_CHECK_TIMEOUT_MS = parseInt(process.env.STREAM_CHECK_TIMEOUT_MS || "2000", 10);
+
 // ------------------------------------------------------------
 // helpers
 // ------------------------------------------------------------
@@ -73,16 +83,17 @@ const genreSort = (a, b) => {
   return a.localeCompare(b, "cs");
 };
 
-// řazení položek podle playlistu, ale ★ až na konec (pořadí v playlistu zachováno)
+// playlist order, ale ★ až na konec (pořadí uvnitř zachováno)
 function sortByPlaylistThenStarLast(a, b) {
   const aStar = hasStarGenre(a.genres);
   const bStar = hasStarGenre(b.genres);
-
   if (aStar && !bStar) return 1;
   if (!aStar && bStar) return -1;
-
-  // obě stejné skupiny -> pořadí v playlistu
   return (a.order ?? 999999999) - (b.order ?? 999999999);
+}
+
+function isHttpsUrl(u) {
+  return typeof u === "string" && /^https:\/\//i.test(u.trim());
 }
 
 async function fetchText(url) {
@@ -99,13 +110,25 @@ async function fetchText(url) {
   return text;
 }
 
+// Parse M3U: čteme EXTINF + hned následující URL řádek
 function parseM3U(m3uText) {
   const lines = m3uText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const items = [];
   let order = 0;
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (!line.toUpperCase().startsWith("#EXTINF")) continue;
+
+    // najdi URL na nejbližším dalším řádku, který není comment
+    let url = "";
+    for (let j = i + 1; j < lines.length; j++) {
+      const nxt = lines[j];
+      if (!nxt) continue;
+      if (nxt.startsWith("#")) continue;
+      url = nxt;
+      break;
+    }
 
     const tvgId = getAttr(line, "tvg-id") || ""; // TMDb id
     const tvgName = getAttr(line, "tvg-name") || "";
@@ -114,7 +137,7 @@ function parseM3U(m3uText) {
     const groupTitle = getAttr(line, "group-title") || "";
     const titlePart = line.includes(",") ? line.split(",").slice(1).join(",").trim() : tvgName;
 
-    items.push({ tvgId, tvgName, tvgType, logo, groupTitle, titlePart, order: order++ });
+    items.push({ tvgId, tvgName, tvgType, logo, groupTitle, titlePart, url, order: order++ });
   }
 
   console.log("PARSE items:", items.length);
@@ -221,13 +244,64 @@ function imdbRatingFromTmdb(voteAverage) {
 }
 
 // ------------------------------------------------------------
+// stream validity check (optional)
+// ------------------------------------------------------------
+async function isStreamProbablyOk(url) {
+  if (!VALIDATE_STREAM) return true;
+  if (!isHttpsUrl(url)) return false;
+
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), STREAM_CHECK_TIMEOUT_MS);
+
+  try {
+    const res = await fetchFn(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (StremioM3UAddon)" }
+    });
+
+    // některé CDN HEAD nepovolí → fallback na GET s Range
+    if (res.ok) return true;
+
+    const ctrl2 = new AbortController();
+    const t2 = setTimeout(() => ctrl2.abort(), STREAM_CHECK_TIMEOUT_MS);
+    try {
+      const res2 = await fetchFn(url, {
+        method: "GET",
+        redirect: "follow",
+        signal: ctrl2.signal,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (StremioM3UAddon)",
+          "Range": "bytes=0-0"
+        }
+      });
+      return res2.ok;
+    } finally {
+      clearTimeout(t2);
+    }
+  } catch (e) {
+    return false;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// ------------------------------------------------------------
 // cache
 // ------------------------------------------------------------
 let cache = {
   loadedAt: 0,
-  movies: [],
-  series: [],
-  byImdb: new Map(),
+
+  movies: [],  // { imdbId, ... , url, order }
+  series: [],  // { imdbId, ... , episodes:Set, order }
+
+  // stream maps:
+  movieUrlByImdb: new Map(),            // imdbId -> https url
+  episodeUrlByImdb: new Map(),          // imdbId -> Map("s-e" -> https url)
+
+  byImdb: new Map(),                    // imdbId -> { type, tmdbId }
+
   movieGenres: [],
   seriesGenres: []
 };
@@ -248,12 +322,12 @@ async function ensureCache(forceReload = false) {
 
   const items = parseM3U(m3u);
 
-  // Pozor: Map zachovává pořadí vložení, ale musíme zabránit přepsání orderu
-  const moviesMap = new Map(); // tmdbId -> item (první výskyt)
-  const seriesMap = new Map(); // tmdbId -> { item(first), episodes:Set }
+  const moviesMap = new Map(); // tmdbId -> first item
+  const seriesMap = new Map(); // tmdbId -> { item(first), episodes:Set, epUrl:Map }
   const movieGenresSet = new Set();
   const seriesGenresSet = new Set();
 
+  // build URL maps from playlist order
   for (const it of items) {
     const t = (it.tvgType || "").toLowerCase();
 
@@ -268,8 +342,12 @@ async function ensureCache(forceReload = false) {
       if (!se) continue;
       if (!it.tvgId) continue;
 
-      if (!seriesMap.has(it.tvgId)) seriesMap.set(it.tvgId, { item: it, episodes: new Set() });
-      seriesMap.get(it.tvgId).episodes.add(`${se.s}-${se.e}`);
+      if (!seriesMap.has(it.tvgId)) {
+        seriesMap.set(it.tvgId, { item: it, episodes: new Set(), epUrl: new Map() });
+      }
+      const obj = seriesMap.get(it.tvgId);
+      obj.episodes.add(`${se.s}-${se.e}`);
+      if (isHttpsUrl(it.url)) obj.epUrl.set(`${se.s}-${se.e}`, it.url);
 
       for (const g of splitGenres(it.groupTitle)) seriesGenresSet.add(g);
     }
@@ -278,6 +356,7 @@ async function ensureCache(forceReload = false) {
   console.log("MOVIES candidates:", moviesMap.size);
   console.log("SERIES candidates:", seriesMap.size);
 
+  // --- resolve movies (tmdb -> imdb + cz meta) ---
   const movieEntries = [...moviesMap.entries()];
   const movieResolved = await mapLimit(movieEntries, TMDB_PAR_MOVIES, async ([tmdbId, it]) => {
     let imdbId = null;
@@ -314,10 +393,12 @@ async function ensureCache(forceReload = false) {
       releaseInfo,
       runtime,
       imdbRating,
-      order: it.order
+      order: it.order,
+      url: isHttpsUrl(it.url) ? it.url : ""
     };
   });
 
+  // --- resolve series (tmdb -> imdb + cz meta) ---
   const seriesEntries = [...seriesMap.entries()];
   const seriesResolved = await mapLimit(seriesEntries, TMDB_PAR_SERIES, async ([tmdbId, obj]) => {
     let imdbId = null;
@@ -358,7 +439,8 @@ async function ensureCache(forceReload = false) {
       runtime: run,
       imdbRating,
       episodes: obj.episodes,
-      order: obj.item.order
+      order: obj.item.order,
+      epUrl: obj.epUrl // Map("s-e" -> url)
     };
   });
 
@@ -366,14 +448,26 @@ async function ensureCache(forceReload = false) {
   const series = seriesResolved.filter(Boolean);
 
   const byImdb = new Map();
-  for (const m of movies) byImdb.set(m.imdbId, { type: "movie", tmdbId: m.tmdbId });
-  for (const s of series) byImdb.set(s.imdbId, { type: "series", tmdbId: s.tmdbId });
+  const movieUrlByImdb = new Map();
+  const episodeUrlByImdb = new Map();
+
+  for (const m of movies) {
+    byImdb.set(m.imdbId, { type: "movie", tmdbId: m.tmdbId });
+    if (isHttpsUrl(m.url)) movieUrlByImdb.set(m.imdbId, m.url);
+  }
+
+  for (const s of series) {
+    byImdb.set(s.imdbId, { type: "series", tmdbId: s.tmdbId });
+    episodeUrlByImdb.set(s.imdbId, s.epUrl || new Map());
+  }
 
   cache = {
     loadedAt: now,
     movies,
     series,
     byImdb,
+    movieUrlByImdb,
+    episodeUrlByImdb,
     movieGenres: [...movieGenresSet].sort(genreSort),
     seriesGenres: [...seriesGenresSet].sort(genreSort)
   };
@@ -386,8 +480,8 @@ async function ensureCache(forceReload = false) {
 // ------------------------------------------------------------
 function buildManifestWithGenres(movieGenres, seriesGenres) {
   const catalogs = [
-    { type: "movie", id: "m3u-movies", name: "CINEMA CITY", extra: [{ name: "refresh", options: ["0","1"] }] },
-    { type: "series", id: "m3u-series", name: "CINEMA CITY", extra: [{ name: "refresh", options: ["0","1"] }] }
+    { type: "movie", id: "m3u-movies", name: "Moje filmy (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
+    { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] }
   ];
 
   for (const g of movieGenres) {
@@ -408,7 +502,7 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
     });
   }
 
-  return {
+    return {
     id: "com.veronika.m3u.library",
     version: "0.9.2",
     name: "M3U Library (CZ + genres + playlist order)",
@@ -420,6 +514,7 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
     catalogs
   };
 }
+
 function metaFromItem(type, x) {
   return {
     id: x.imdbId,
@@ -457,20 +552,17 @@ function metaFromItem(type, x) {
       const isMovie = type === "movie";
       const baseArr = isMovie ? cache.movies : cache.series;
 
-      // ALL: playlist order (★ last, but stable)
       if ((isMovie && id === "m3u-movies") || (!isMovie && id === "m3u-series")) {
         const sorted = [...baseArr].sort(sortByPlaylistThenStarLast);
         return { metas: sorted.map(x => metaFromItem(type, x)) };
       }
 
-      // Genre catalogs: playlist order (pouze filtr, žádná abeceda)
       const prefix = isMovie ? "m3u-movies-g-" : "m3u-series-g-";
       if (id.startsWith(prefix)) {
         const slug = id.slice(prefix.length);
         const filtered = baseArr
           .filter(x => (x.genres || []).some(g => slugify(g) === slug))
           .sort((a, b) => (a.order ?? 999999999) - (b.order ?? 999999999));
-
         return { metas: filtered.map(x => metaFromItem(type, x)) };
       }
 
@@ -494,6 +586,71 @@ function metaFromItem(type, x) {
     }
   });
 
+  // STREAM handler
+  builder.defineStreamHandler(async ({ type, id }) => {
+    try {
+      await ensureCache(false);
+
+      // MOVIE: id = tt....
+      if (type === "movie") {
+        const url = cache.movieUrlByImdb.get(id);
+        if (!isHttpsUrl(url)) return { streams: [] };
+
+        const ok = await isStreamProbablyOk(url);
+        if (!ok) return { streams: [] };
+
+        if (PLAY_NOW) {
+          return { streams: [{ title: "▶ Můj stream", url }] };
+        }
+        // 2 streamy -> Stremio ukáže výběr
+        return {
+          streams: [
+            { title: "▶ Přehrát můj stream", url },
+            { title: "📌 (Tip) Pokud nechceš můj stream, vyber jiný addon ve zdrojích", url }
+          ]
+        };
+      }
+
+      // SERIES: id může být "tt1234567:1:5" (season/episode)
+      if (type === "series") {
+        const m = String(id).match(/^(tt\d+):(\d+):(\d+)$/i);
+        if (!m) {
+          // pokud Stremio požádá o stream pro show-level (bez epizody), nic nevracíme
+          return { streams: [] };
+        }
+        const baseImdb = m[1];
+        const s = parseInt(m[2], 10);
+        const e = parseInt(m[3], 10);
+        const key = `${s}-${e}`;
+
+        const epMap = cache.episodeUrlByImdb.get(baseImdb);
+        const url = epMap ? epMap.get(key) : "";
+
+        if (!isHttpsUrl(url)) return { streams: [] };
+
+        const ok = await isStreamProbablyOk(url);
+        if (!ok) return { streams: [] };
+
+        const label = `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
+
+        if (PLAY_NOW) {
+          return { streams: [{ title: `▶ Můj stream (${label})`, url }] };
+        }
+        return {
+          streams: [
+            { title: `▶ Přehrát můj stream (${label})`, url },
+            { title: "📌 (Tip) Pokud nechceš můj stream, vyber jiný addon ve zdrojích", url }
+          ]
+        };
+      }
+
+      return { streams: [] };
+    } catch (e) {
+      console.error("STREAM ERROR:", e?.stack || e?.message || e);
+      return { streams: [] };
+    }
+  });
+
   serveHTTP(builder.getInterface(), { port: PORT });
-  console.log("Addon running on port:", PORT);
+  console.log("Addon running on port:", PORT, "| PLAY_NOW:", PLAY_NOW, "| VALIDATE_STREAM:", VALIDATE_STREAM);
 })();
