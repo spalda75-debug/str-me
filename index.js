@@ -409,16 +409,15 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
   }
 
   return {
-  id: "com.veronika.m3u.library",
-  version: "0.8.1",
-  name: "M3U Library (CZ + genres + ★ last)",
-  description: "Knihovna z M3U...",
-  logo: "https://www.dropbox.com/scl/fi/yzuy7sncr5gn5zm82yk36/icon.png?rlkey=pw0hfdjmh2p6b3vncwzn1b7e3&st=nts6otfq&raw=1",
-  // background: "https://raw.githubusercontent.com/TVUJ_USER/TVUJ_REPO/main/assets/bg.jpg",
-  resources: ["catalog", "meta"],
-  types: ["movie", "series"],
-  catalogs
-};
+    id: "com.veronika.m3u.library",
+    version: "0.9.0",
+    name: "M3U Library (CZ + genres + playlist order)",
+    description: "Řazení v Moje filmy/seriály podle pořadí v playlistu (★ až na konec, ale pořadí zachováno).",
+    resources: ["catalog", "meta"],
+    types: ["movie", "series"],
+    catalogs
+  };
+}
 
 function metaFromItem(type, x) {
   return {
