@@ -409,16 +409,17 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
   }
 
   return {
-  id: "com.veronika.m3u.library",
-  version: "0.9.2",
-  name: "M3U Library (CZ + genres + playlist order)",
-  description: "Řazení v Moje filmy/seriály podle pořadí v playlistu (★ až na konec, ale pořadí zachováno).",
-  logo: "https://www.dropbox.com/scl/fi/yzuy7sncr5gn5zm82yk36/icon.png?rlkey=pw0hfdjmh2p6b3vncwzn1b7e3&st=14riba9f&dl=1",
-  // background: "https://www.dropbox.com/scl/fi/TVUJ_ID/bg.png?rlkey=TVUJ_KEY&dl=1",
-  resources: ["catalog", "meta"],
-  types: ["movie", "series"],
-  catalogs
-};
+    id: "com.veronika.m3u.library",
+    version: "0.9.2",
+    name: "M3U Library (CZ + genres + playlist order)",
+    description: "Řazení v Moje filmy/seriály podle pořadí v playlistu (★ až na konec, ale pořadí zachováno).",
+    logo: "https://www.dropbox.com/scl/fi/yzuy7sncr5gn5zm82yk36/icon.png?rlkey=pw0hfdjmh2p6b3vncwzn1b7e3&st=14riba9f&dl=1",
+    // background: "https://www.dropbox.com/scl/fi/TVUJ_ID/bg.png?rlkey=TVUJ_KEY&dl=1",
+    resources: ["catalog", "meta"],
+    types: ["movie", "series"],
+    catalogs
+  };
+}
 function metaFromItem(type, x) {
   return {
     id: x.imdbId,
