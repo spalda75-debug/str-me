@@ -600,13 +600,12 @@ function metaFromItem(type, x) {
         if (!ok) return { streams: [] };
 
         if (PLAY_NOW) {
-          return { streams: [{ title: "▶ Můj stream", url }] };
+          return { streams: [{ name: "▶ Přehrát můj stream", url }] };
         }
-        // 2 streamy -> Stremio ukáže výběr
         return {
           streams: [
-            { title: "▶ Přehrát můj stream", url },
-            { title: "📌 (Tip) Pokud nechceš můj stream, vyber jiný addon ve zdrojích", url }
+            { name: "▶ Přehrát můj stream", url },
+            { name: "🔎 Vybrat jiné zdroje (jiné addony)", url } // jen jako “druhá volba”; Stremio nemá akci “otevři katalog addonů”
           ]
         };
       }
