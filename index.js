@@ -549,12 +549,11 @@ async function ensureCache(forceReload = false) {
 function buildManifestWithGenres(movieGenres, seriesGenres) {
   const catalogs = [
     { type: "movie", id: "m3u-movies", name: "Moje filmy (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
-    { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] }
-    // ANDROID FIX: pevné refresh katalogy
-  catalogs.push(
+    { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
+  
+    // ANDROID FIX: pevné refresh katalogy (bez extra)
     { type: "movie", id: "m3u-movies-refresh", name: "Moje filmy (Refresh)" },
     { type: "series", id: "m3u-series-refresh", name: "Moje seriály (Refresh)" }
-  );
   ];
 
   for (const g of movieGenres) {
