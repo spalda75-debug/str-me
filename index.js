@@ -667,7 +667,6 @@ function metaFromItem(type, x) {
         return {
           streams: [
             { title: `▶ Přehrát můj stream (${label})`, url },
-            { title: "📌 (Tip) Pokud nechceš můj stream, vyber jiný addon ve zdrojích", url }
           ]
         };
       }
