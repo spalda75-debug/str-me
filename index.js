@@ -707,6 +707,7 @@ function metaFromItem(type, x) {
         return {
           streams: [
             { name: "▶ Přehrát můj stream", url },
+            { name: "📌 Pokud chceš jiné zdroje: otevři 'Zdroje' a vyber jiné addony", url }
           ]
         };
       }
@@ -729,6 +730,7 @@ function metaFromItem(type, x) {
         return {
           streams: [
             { name: `▶ Přehrát můj stream (${label})`, url },
+            { name: "📌 Pokud chceš jiné zdroje: otevři 'Zdroje' a vyber jiné addony", url }
           ]
         };
       }
