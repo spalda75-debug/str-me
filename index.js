@@ -549,7 +549,8 @@ async function ensureCache(forceReload = false) {
 function buildManifestWithGenres(movieGenres, seriesGenres) {
   const catalogs = [
     { type: "movie", id: "m3u-movies", name: "Moje filmy (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
-    { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] },
+    { type: "series", id: "m3u-series", name: "Moje seriály (M3U)", extra: [{ name: "refresh", options: ["0","1"] }] }
+  ];
 
   for (const g of movieGenres) {
     catalogs.push({
@@ -571,7 +572,7 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
 
   return {
     id: "com.veronika.m3u.library",
-    version: "1.1.4",
+    version: "1.1.0",
     name: "M3U Library (fallback IDs + stream + playlist order)",
     description: "Funguje i bez TMDb ID: použije interní m3u:* ID. Streamy z playlistu. Řazení dle pořadí v playlistu.",
     resources: ["catalog", "meta", "stream"],
@@ -612,19 +613,16 @@ function metaFromItem(type, x) {
   builder.defineCatalogHandler(async ({ type, id, extra }) => {
     try {
       const force = extra?.refresh === "1";
-
-      // ANDROID FIX: pevné refresh katalogy
-      const forceById =
-        id === "m3u-movies-refresh" ||
-        id === "m3u-series-refresh";
-      
-      await ensureCache(force || forceById);
+      await ensureCache(force);
 
       const isMovie = type === "movie";
       const baseArr = isMovie ? cache.movies : cache.series;
 
       // ALL: playlist order (★ last)
       if ((isMovie && id === "m3u-movies") || (!isMovie && id === "m3u-series")) {
+        const sorted = [...baseArr].sort(sortByPlaylistThenStarLast);
+        return { metas: sorted.map(x => metaFromItem(type, x)) };
+      }
 
       // GENRE: filtr + playlist order
       const prefix = isMovie ? "m3u-movies-g-" : "m3u-series-g-";
