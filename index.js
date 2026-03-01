@@ -548,8 +548,8 @@ async function ensureCache(forceReload = false) {
 // ------------------------------------------------------------
 function buildManifestWithGenres(movieGenres, seriesGenres) {
   const catalogs = [
-    { type: "movie", id: "m3u-movies", name: "CINEMA CITY filmy", extra: [{ name: "refresh", options: ["0","1"] }] },
-    { type: "series", id: "m3u-series", name: "CINEMA CITY seriály", extra: [{ name: "refresh", options: ["0","1"] }] }
+    { type: "movie", id: "m3u-movies", name: "CINEMA CITY", extra: [{ name: "refresh", options: ["0","1"] }] },
+    { type: "series", id: "m3u-series", name: "CINEMA CITY", extra: [{ name: "refresh", options: ["0","1"] }] }
   ];
 
   for (const g of movieGenres) {
@@ -572,9 +572,11 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
 
   return {
     id: "com.veronika.m3u.library",
-    version: "1.1.4",
-    name: "CINEMA CITY",
-    description: "Funguje i bez TMDb ID: použije interní m3u:* ID. Streamy z playlistu. Řazení dle pořadí v playlistu.",
+    version: "1.1.5",
+    name: "M3U (CINEMA CITY)",
+    description: "Řazení v Moje filmy/seriály podle pořadí v playlistu (★ až na konec, ale pořadí zachováno).",
+    logo: "https://www.dropbox.com/scl/fi/yzuy7sncr5gn5zm82yk36/icon.png?rlkey=pw0hfdjmh2p6b3vncwzn1b7e3&st=14riba9f&dl=1",
+    // background: "https://www.dropbox.com/scl/fi/TVUJ_ID/bg.png?rlkey=TVUJ_KEY&dl=1",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
     catalogs
