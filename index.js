@@ -572,8 +572,8 @@ function buildManifestWithGenres(movieGenres, seriesGenres) {
 
   return {
     id: "com.veronika.m3u.library",
-    version: "1.1.0",
-    name: "M3U Library (fallback IDs + stream + playlist order)",
+    version: "1.1.4",
+    name: "CINEMA CITY",
     description: "Funguje i bez TMDb ID: použije interní m3u:* ID. Streamy z playlistu. Řazení dle pořadí v playlistu.",
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series"],
@@ -707,7 +707,6 @@ function metaFromItem(type, x) {
         return {
           streams: [
             { name: "▶ Přehrát můj stream", url },
-            { name: "📌 Pokud chceš jiné zdroje: otevři 'Zdroje' a vyber jiné addony", url }
           ]
         };
       }
@@ -730,7 +729,6 @@ function metaFromItem(type, x) {
         return {
           streams: [
             { name: `▶ Přehrát můj stream (${label})`, url },
-            { name: "📌 Pokud chceš jiné zdroje: otevři 'Zdroje' a vyber jiné addony", url }
           ]
         };
       }
