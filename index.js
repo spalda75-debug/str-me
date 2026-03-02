@@ -14,7 +14,7 @@ const PLAYLIST_URL = (process.env.PLAYLIST_URL || "").trim();
 const TMDB_KEY = (process.env.TMDB_KEY || "").trim();
 const PORT = process.env.PORT || 7000;
 
-const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "300", 10); // default 5 min
+const PLAYLIST_REFRESH_SEC = parseInt(process.env.PLAYLIST_REFRESH_SEC || "1500", 10); // default 5 min
 const TMDB_PAR_MOVIES = parseInt(process.env.TMDB_PAR_MOVIES || "6", 10);
 const TMDB_PAR_SERIES = parseInt(process.env.TMDB_PAR_SERIES || "4", 10);
 
